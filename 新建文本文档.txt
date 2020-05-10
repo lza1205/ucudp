@@ -1,0 +1,32 @@
+server_listen
+	server_recv_pthread
+		recvfrom
+		add_recv_pthread_list
+			if 已经有队列
+				add_data_to_list
+				唤醒线程去处理数据
+			else 
+				创建新的队列
+				add_data_to_list 新队列
+				唤醒server_accept线程（告诉系统，有新的客户端过来）
+				
+				
+server_accept
+	for list头
+		if(pos->list_flg == 1) 有需要监听的直接返回 listen
+			return 	struct listen
+		else
+			pthread_cond_wait(&listen_cond, &listen_mtx);
+			//什么时候被唤醒？当创建新的队列 唤醒server_accept线程（告诉系统，有新的客户端过来）
+			
+			
+			
+listen_pthread(_listen, listen_phread)
+	listen_phread
+		recv_from_listen
+			while(recv_list->data_num == 0)
+				pthread_cond_wait 
+				//什么时候被唤醒？当队列有数据的时候 add_data_to_list 去唤醒
+			for 拿出一个数据
+
+			

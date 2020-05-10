@@ -1,0 +1,226 @@
+/*--------------------------------------------------------------------
+　　　/\~~~~~~~~~~~~~\　　　▓　　^*^　　　☆　　$$　 .☆ 
+　　./　\~~~▓~　 ~~~~\ ◆　　圣诞 .快乐　 *　 $◢◣$　 * 
+　　/ ^^ \ ══════\.◆　　　 *　*　　*　 $◢★◣$　 * 
+　..▎[]　▎田　田 ▎ |┃◆　 .　　　　　*　 $◢■■◣$　 * 
+　&&▎　　▎　　　 ▎'|'▎ @　　　　　　　* $◢■■■◣$ * 
+＃ ■■■■■■■■■■〓▄▃▂▁愿你圣诞快乐︸︸||︸︸ 
+
+
+				udp服务器并发例子
+版本：1.0
+时间：2015.08.05
+作者：Faker
+
+--------------------------------------------------------------------*/
+
+
+摘要：
+		本文将讨论UDP的并发实现机制。给出了两种实现方法。第一种是最为常见的，TFTP传输的方式。
+		第二种是笔者无聊时自己编写，功能难免会比较简单、也会有许多不足。有兴趣的同学可以一起讨论，把功能
+		做的更强大一些
+		现将思路整理如下，有兴趣的同学可以一起讨论。代码稍后公布。
+			
+		众所周知，通常所见的的TCP服务器都是并发实现的，即服务同时处理多个请求，
+	而不是等待前一个完成再处理下一个请求，这个实现得益于TCP的listen()与connect()的分工处理机制。
+	
+	而对于 UDP 没有这种监听和连接机制，所以它必须等待前一处理完成才能继续处理下一个客户的请求。
+	但并不是说UDP实现并发服务器是不可能的，只是与上面的实现稍有不同。
+
+UDP服务器并发的两种方法：
+	一、比较常用的处理方法是：
+		服务器（知名端口）等待一下客户的到来，当一个客户到来后，记下其IP和port，然后同理，
+		服务器fork一个子进程，建立一个socket再bind一个随机端口，然后建立与客户的连接，
+		并处理该客户的请求。父进程继续循环，等待下一个客户的到来。在tftpd中就是使用这种技术的。
+
+		大概的实现如下:
+		for ( ; ; )
+		{
+		   /* 等待新的客户端连接 */
+			recvform( &from_addr)
+			
+			/* 创建一个新的进程，由该进程去处理 */
+		   if (fork() == 0)
+				break; //子进程跳出循环   
+		}
+		
+		//child now here
+		peer = socket(AF_INET, SOCK_DGRAM, 0);
+		//绑定一个随机端口
+		myaddr.sin_port = htons(0); 
+		bind(peer,(struct sockaddr *)&myaddr, / 
+										sizeof myaddr)
+		/* 
+			把这个套接字跟客户端的地址连接起来
+			这也就意味之后之后套接字使用 send recv这些函数时
+			都是直接跟指定的客户端进行通信的
+		*/
+		connect(peer, (struct sockaddr *)&from, sizeof from)
+		
+	以上方式	简单实用，但是每来个客户端都需要创建一个新的 socket，为每个客户端分配一个新的临时端口，然后客户端
+	之后的通信需要跟新的端口进行数据传输。
+	
+	二、
+		如果对上述不满意。我们可以采用新的策略。对UDP进行封装，以此实现类型TCP的功能。
+		我们来看下一个简单 TCP 服务器的原型：
+		
+		int main()
+		{
+			/* 初始化socket套接字 */
+			sockfd = init_socket();	
+			/* 开始监听 */
+			if(listen(sock_fd, BACKLOG) == -1)
+			{
+				perror("listen is error\r\n");
+				exit(1);
+			}
+			while(1)
+			{
+				/* 等待新的客户端连接 */
+				if((new_fd = accept(sock_fd, (struct sockaddr *)&their_addr, &sin_size)) == -1)
+				{
+					perror("accept");
+					continue;
+				}
+				/* fork出一个进程，由该进程去处理这个连接 */
+				if(!fork())
+				{
+				}
+			}
+		}		
+		
+		目测笔者的代码封装出几个跟上面的TCP相似的函数接口。使用这些接口，可以很简单写出一个UDP并发服务器。例如：
+		
+		/* 主函数 */
+		int main(int argc, char *argv[])
+		{
+			/* 定义一个listen指针。该结构体是自己定义的 */
+			struct listen *_listen;
+			/* 初始化socket，这个初始化过程跟普通的UDP初始化 socket套接字一样 */
+			sockfd = init_socket();	
+
+			/*
+				开始监听这个socket. 最大的连接数为10，也就是说最多只有10个客户端
+				封装好的一个函数，功能有点类似于 TCP协议中的 listen 函数
+			*/
+			server_listen(&sockfd, 10);
+
+			while(1)
+			{
+				/* 
+				获得一个连接。类似于TCP的 accept 函数 
+				需要注意的是，如果没有连接， server_accept 函数将进入休眠状态，直到有一个新的客户端数据
+				客户端只有在第一次发生数据过来的时候，才会创建一个新的 listen ，并唤醒 server_accept 函数
+				之后，这个客户端的所有数据都将发送到 这个新的 listen 的数据队列中。
+				所以。通过这个 listen ，我们可以创建一个进程，由该进程去处理这个客户端之后的请求
+				这里，listen 有点像 TCP 协议中的 accept 函数新建的 sockfd
+				*/
+				_listen = server_accept();
+				
+				/* 
+				虽然说 server_accept 会进入休眠，但是仍然会被其它信号唤醒，所以要做个判断
+				判断下是否为 NULL 。为 NULL 则说明没有新的连接 
+				*/
+				if(_listen == NULL){
+					continue;
+				}
+				
+				printf("new client \r\n");
+				/* 
+				启动一个 listen_phread 线程，并且，由该线程去处理这个连接
+				类似于TCP 的fork
+				*/
+				listen_pthread(_listen, listen_phread);
+			}
+		}
+		
+		
+		listen_phread 线程简单实现：
+		void *listen_phread(void *pdata)
+		{
+			int ret;
+			char buf[1204];
+			struct sockaddr_in clientaddr;
+			
+			/* 获得 listen */
+			struct listen *_listen;
+			_listen = (struct listen *)pdata;
+
+			while(1)
+			{
+				/*
+				recv_from_listen 也是一个封装好的函数，功能是从这个 lsiten 中获取数据
+				最后一个参数表示无数据时休眠的时间
+				-1 表示永久休眠。知道有数据为止
+				*/
+				ret = recv_from_listen(_listen, &clientaddr, buf, 1204, -1);
+				if(ret == -1)
+				{
+					printf("%p recv is err \r\n", _listen);
+				}else{
+					printf("%p recv %d byte data is [%s]\r\n", _listen, ret, buf);
+					if((ret = sendto(sockfd, buf, ret, 0, (struct sockaddr *)(&(_listen->addr)), 
+											sizeof(struct sockaddr))) == -1)
+					{
+						perror("sendto :");
+					}
+					printf("sento [%s]\r\n", buf);
+				}
+			}
+			/* 关闭连接，会释放内存，注意，一个listen 被创建后，需要使用这个函数释放内存 */
+			listen_close(listen);
+		}
+
+		
+		lsiten 结构体原型：
+		struct listen{		
+			struct sockaddr addr;		/* 数据包地址信息 */
+			int data_num;				/* 数据包数量 */
+
+			int list_flg;				/* 是否已经被监听了 */
+
+			pthread_mutex_t mutex;	/* 线程锁 */
+
+			/* 这两个条件变量相关的 */
+			
+			pthread_mutex_t recv_mtx;
+			pthread_cond_t recv_cond;
+
+			struct list_head head;		/* 数据包队列 */
+			
+			struct list_head listen_list;		/*接收的线程队列 */
+		};
+
+		
+	实现原理：
+		这个接口函数是基于队列、多线程实现的。这里简单地说下原理，稍后有时间我会对代码进一步分析
+		
+		
+	1.	listen 队列：
+		系统会创建一个队列，该队列的成员为一个 listen ，每个 listen 的 addr 元素会记录下自己要接收的
+		客户端。
+		之后，server_listen 创建一个线程，由该线程去接收数据。
+		接收到网络数据后，会遍历 listen 链表，找到一个想要接收这个数据的 listen 。
+		如果没有，会创建一个新的 listen ，并将这个 listen 加入到 listen 队列中去
+
+	2 	数据包队列
+		找到 listen 后，每个 listen 其实就是一个 数据包队列头。系统会把数据放到 这个 listen 数据包队列中去
+		然后唤醒 recv_from_listen 
+		
+	也就是说，系统的队列结构如下
+	
+	listen 队列
+		listen(1) -> listen(2) -> listen(3) -> listen(4) -> .......
+			|			|			|
+		  data(1)	  data		   data
+			|			|
+		  data(1)	  data
+		  
+	每个listen本身就是一个数据包队列头
+		  
+		  
+	recv_from_listen 函数会试图去从一个 listen 的数据包队列中获取数据，如果没有数据，则进入休眠状态。
+	
+	
+	
+	
